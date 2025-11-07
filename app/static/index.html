@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PartiTone - Audio Stem Separation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            background: #f8f9ff;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            margin-bottom: 30px;
+        }
+
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .upload-text {
+            color: #667eea;
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .upload-hint {
+            color: #999;
+            font-size: 0.9em;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .file-info {
+            background: #f0f2ff;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .stems-section {
+            margin-bottom: 30px;
+        }
+
+        .stems-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .stems-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .stem-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background: #f8f9ff;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .stem-checkbox:hover {
+            background: #e8ebff;
+        }
+
+        .stem-checkbox input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        .stem-checkbox label {
+            cursor: pointer;
+            font-weight: 500;
+            color: #333;
+            flex: 1;
+        }
+
+        .process-btn {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.2em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+        }
+
+        .process-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .process-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .progress-section {
+            display: none;
+            margin-bottom: 20px;
+        }
+
+        .progress-section.show {
+            display: block;
+        }
+
+        .progress-bar-container {
+            background: #f0f0f0;
+            border-radius: 10px;
+            height: 30px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .progress-message {
+            text-align: center;
+            color: #666;
+            font-size: 0.95em;
+        }
+
+        .download-btn {
+            width: 100%;
+            padding: 18px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.2em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: none;
+        }
+
+        .download-btn.show {
+            display: block;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(40, 167, 69, 0.4);
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 PartiTone</h1>
+        <p class="subtitle">Separate audio into individual stems</p>
+
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📁</div>
+            <div class="upload-text">Drag & drop your audio file here</div>
+            <div class="upload-hint">or click to browse</div>
+            <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.flac,.m4a,.aac">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <div class="file-name" id="fileName"></div>
+            <div class="file-size" id="fileSize"></div>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="stems-section">
+            <div class="stems-title">Select stems to extract:</div>
+            <div class="stems-grid">
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="vocals" value="vocals" checked>
+                    <label for="vocals">Vocals</label>
+                </div>
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="drums" value="drums" checked>
+                    <label for="drums">Drums</label>
+                </div>
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="bass" value="bass" checked>
+                    <label for="bass">Bass</label>
+                </div>
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="guitar" value="guitar" checked>
+                    <label for="guitar">Guitar</label>
+                </div>
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="piano" value="piano" checked>
+                    <label for="piano">Piano</label>
+                </div>
+                <div class="stem-checkbox">
+                    <input type="checkbox" id="other" value="other" checked>
+                    <label for="other">Other</label>
+                </div>
+            </div>
+        </div>
+
+        <button class="process-btn" id="processBtn" disabled>Process Audio</button>
+
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar">0%</div>
+            </div>
+            <div class="progress-message" id="progressMessage">Initializing...</div>
+        </div>
+
+        <button class="download-btn" id="downloadBtn">Download Stems</button>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const processBtn = document.getElementById('processBtn');
+        const progressSection = document.getElementById('progressSection');
+        const progressBar = document.getElementById('progressBar');
+        const progressMessage = document.getElementById('progressMessage');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const errorMessage = document.getElementById('errorMessage');
+
+        let selectedFile = null;
+        let currentJobId = null;
+        let eventSource = null;
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('click', () => fileInput.click());
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            // Validate file type
+            const validTypes = ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/flac', 
+                              'audio/x-flac', 'audio/mp4', 'audio/m4a'];
+            const validExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac'];
+            const fileExt = '.' + file.name.split('.').pop().toLowerCase();
+            
+            if (!validTypes.includes(file.type) && !validExtensions.includes(fileExt)) {
+                showError('Please upload a valid audio file (MP3, WAV, FLAC, M4A, or AAC)');
+                return;
+            }
+
+            selectedFile = file;
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            fileInfo.classList.add('show');
+            processBtn.disabled = false;
+            hideError();
+            resetUI();
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function getSelectedStems() {
+            const stems = [];
+            ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'].forEach(stem => {
+                if (document.getElementById(stem).checked) {
+                    stems.push(stem);
+                }
+            });
+            return stems;
+        }
+
+        processBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            const selectedStems = getSelectedStems();
+            if (selectedStems.length === 0) {
+                showError('Please select at least one stem to extract');
+                return;
+            }
+
+            // Disable process button
+            processBtn.disabled = true;
+            processBtn.textContent = 'Processing...';
+            
+            // Show progress
+            progressSection.classList.add('show');
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            progressMessage.textContent = 'Uploading file...';
+            hideError();
+
+            // Upload file and start processing
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            formData.append('stems', JSON.stringify(selectedStems));
+
+            try {
+                const response = await fetch('/separate', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    throw new Error(error.detail || 'Failed to start processing');
+                }
+
+                const data = await response.json();
+                currentJobId = data.job_id;
+                
+                // Connect to SSE for progress updates
+                connectSSE(currentJobId);
+
+            } catch (error) {
+                showError(error.message);
+                processBtn.disabled = false;
+                processBtn.textContent = 'Process Audio';
+                progressSection.classList.remove('show');
+            }
+        });
+
+        function connectSSE(jobId) {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource(`/progress/${jobId}`);
+            
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateProgress(data);
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE error:', error);
+                eventSource.close();
+            };
+        }
+
+        function updateProgress(data) {
+            progressBar.style.width = data.progress + '%';
+            progressBar.textContent = data.progress + '%';
+            progressMessage.textContent = data.message || 'Processing...';
+
+            if (data.status === 'completed') {
+                eventSource.close();
+                progressMessage.textContent = 'Processing complete!';
+                downloadBtn.classList.add('show');
+                downloadBtn.onclick = () => {
+                    window.location.href = `/download/${currentJobId}`;
+                };
+                processBtn.disabled = false;
+                processBtn.textContent = 'Process Another File';
+            } else if (data.status === 'failed') {
+                eventSource.close();
+                showError(data.message || 'Processing failed');
+                processBtn.disabled = false;
+                processBtn.textContent = 'Try Again';
+                progressSection.classList.remove('show');
+            }
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.add('show');
+        }
+
+        function hideError() {
+            errorMessage.classList.remove('show');
+        }
+
+        function resetUI() {
+            progressSection.classList.remove('show');
+            downloadBtn.classList.remove('show');
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            currentJobId = null;
+        }
+    </script>
+</body>
+</html>
+
