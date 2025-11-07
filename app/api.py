@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.runner import DemucsRunner, get_device_info
 from app.utils import is_audio_file, ensure_directory
 from app.background import job_manager, JobStatus
+from app.config import get_preset, DEFAULT_PRESET, PERFORMANCE_PRESETS
 
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,26 @@ async def health_check():
     )
 
 
+@app.get("/presets")
+async def get_presets():
+    """Get available performance presets."""
+    presets_info = {}
+    for name, preset in PERFORMANCE_PRESETS.items():
+        presets_info[name] = {
+            "name": preset.name,
+            "model": preset.model,
+            "raw": preset.raw,
+            "repair_glitch": preset.repair_glitch,
+            "repair_mode": preset.repair_mode,
+            "description": preset.description,
+            "estimated_time_3min_song": preset.estimated_time_3min_song,
+        }
+    return {
+        "presets": presets_info,
+        "default": DEFAULT_PRESET,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the web UI."""
@@ -75,22 +96,26 @@ async def root():
 async def separate_audio(
     file: UploadFile = File(...),
     stems: str = Form(None),
-    model: str = Form("htdemucs"),
+    model: str = Form(None),
     format: str = Form("wav"),
     device: Optional[str] = Form(None),
-    raw: bool = Form(False),
-    repair_glitch: bool = Form(False),
+    raw: bool = Form(None),
+    repair_glitch: bool = Form(None),
+    preset: str = Form(None),
+    repair_mode: str = Form(None),
 ):
     """Separate audio file into stems (web UI version with background processing).
     
     Args:
         file: Audio file to separate (MP3, WAV, FLAC, or M4A)
         stems: JSON array of selected stems (e.g., ["vocals", "drums"])
-        model: Model to use (default: htdemucs)
+        model: Model to use (default: from preset or htdemucs)
         format: Output format - wav or flac (default: wav)
         device: Device to use - cpu, cuda, or auto (default: auto)
-        raw: Skip light cleanup (default: False)
-        repair_glitch: Enable glitch repair (default: False)
+        raw: Skip light cleanup (default: from preset or False)
+        repair_glitch: Enable glitch repair (default: from preset or False)
+        preset: Performance preset - fast, balanced, quality, ultra (overrides individual settings)
+        repair_mode: Glitch repair mode - fast, standard, thorough (default: standard)
     
     Returns:
         JSON with job_id for tracking progress
@@ -130,6 +155,28 @@ async def separate_audio(
     # Determine device
     device = None if device == 'auto' or device is None else device
     
+    # Apply preset if provided (preset overrides individual settings)
+    if preset:
+        try:
+            preset_config = get_preset(preset)
+            model = preset_config.model
+            raw = preset_config.raw
+            repair_glitch = preset_config.repair_glitch
+            repair_mode = preset_config.repair_mode
+            logger.info(f"Using preset '{preset}': {preset_config.description}")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        # Use defaults if not set
+        if model is None:
+            model = "htdemucs"
+        if raw is None:
+            raw = False
+        if repair_glitch is None:
+            repair_glitch = False
+        if repair_mode is None:
+            repair_mode = "standard"
+    
     # Read file content
     try:
         file_content = await file.read()
@@ -144,7 +191,9 @@ async def separate_audio(
         selected_stems=selected_stems,
         format=format,
         raw=raw,
-        repair_glitch=repair_glitch
+        repair_glitch=repair_glitch,
+        repair_mode=repair_mode,
+        model=model
     )
     
     # Process job in background thread

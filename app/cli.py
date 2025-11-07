@@ -12,6 +12,7 @@ from app.utils import (
     get_audio_files,
     ensure_directory,
 )
+from app.config import get_preset, DEFAULT_PRESET
 
 
 logging.basicConfig(
@@ -89,6 +90,22 @@ def parse_args():
         help='Enable glitch repair stage (reduce clicks, pops, stutters)',
     )
     
+    parser.add_argument(
+        '--preset',
+        type=str,
+        choices=['fast', 'balanced', 'quality', 'ultra'],
+        default=None,
+        help=f'Performance preset (fast/balanced/quality/ultra). Overrides --model, --raw, --repair-glitch. Default: {DEFAULT_PRESET}',
+    )
+    
+    parser.add_argument(
+        '--repair-mode',
+        type=str,
+        choices=['fast', 'standard', 'thorough'],
+        default='standard',
+        help='Glitch repair mode when --repair-glitch is enabled (default: standard)',
+    )
+    
     return parser.parse_args()
 
 
@@ -101,12 +118,32 @@ def main():
         logger.error(f"Input path does not exist: {args.input}")
         sys.exit(1)
     
+    # Apply preset if provided (preset overrides individual settings)
+    if args.preset:
+        try:
+            preset_config = get_preset(args.preset)
+            model = preset_config.model
+            raw = preset_config.raw
+            repair_glitch = preset_config.repair_glitch
+            repair_mode = preset_config.repair_mode
+            logger.info(f"Using preset '{args.preset}': {preset_config.description}")
+            logger.info(f"  Estimated time for 3min song: {preset_config.estimated_time_3min_song}")
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+    else:
+        # Use command-line arguments or defaults
+        model = args.model
+        raw = args.raw
+        repair_glitch = args.repair_glitch
+        repair_mode = args.repair_mode
+    
     # Determine device
     device = None if args.device == 'auto' else args.device
     
     # Initialize runner
     try:
-        runner = DemucsRunner(model=args.model, device=device)
+        runner = DemucsRunner(model=model, device=device)
     except Exception as e:
         logger.error(f"Failed to initialize Demucs runner: {e}")
         sys.exit(1)
@@ -135,8 +172,9 @@ def main():
             args.input, 
             args.output, 
             args.format,
-            raw=args.raw,
-            repair_glitch=args.repair_glitch
+            raw=raw,
+            repair_glitch=repair_glitch,
+            repair_mode=repair_mode
         )
         
         successful = sum(1 for r in results if 'error' not in r)
@@ -161,10 +199,22 @@ def main():
                 args.input, 
                 args.output, 
                 args.format,
-                raw=args.raw,
-                repair_glitch=args.repair_glitch
+                raw=raw,
+                repair_glitch=repair_glitch,
+                repair_mode=repair_mode
             )
             logger.info(f"Successfully processed: {result['output_dir']}")
+            
+            # Display performance metrics if available
+            if 'performance_metrics' in result:
+                metrics = result['performance_metrics']
+                logger.info("Performance metrics:")
+                logger.info(f"  Total time: {metrics.get('total_time', 0):.2f}s")
+                logger.info(f"  Separation: {metrics.get('separation_time', 0):.2f}s")
+                if 'cleanup_time' in metrics:
+                    logger.info(f"  Cleanup: {metrics.get('cleanup_time', 0):.2f}s")
+                if 'repair_time' in metrics:
+                    logger.info(f"  Repair: {metrics.get('repair_time', 0):.2f}s")
         except Exception as e:
             logger.error(f"Failed to process {args.input}: {e}")
             sys.exit(1)

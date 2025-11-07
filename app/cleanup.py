@@ -5,6 +5,8 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Union
 import pyloudnorm as pyln
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 from app.audio_utils import (
     normalize_audio_shape,
@@ -246,18 +248,32 @@ class LightCleanup:
                 logger.warning("Sample rate not provided for audio arrays, using 44100")
                 sr = 44100
         
-        # Apply cleanup stages
-        logger.info("Trimming silence...")
-        cleaned_stems = {name: self.trim_silence(audio, sr) for name, audio in loaded_stems.items()}
+        # Apply cleanup stages with parallel processing for independent operations
+        num_stems = len(loaded_stems)
+        max_workers = min(num_stems, multiprocessing.cpu_count())
         
-        logger.info("Removing DC offset...")
-        cleaned_stems = {name: self.remove_dc_offset(audio) for name, audio in cleaned_stems.items()}
+        # Parallelize trim_silence and remove_dc_offset (independent per stem)
+        def process_stem_cleanup(name_audio_pair):
+            name, audio = name_audio_pair
+            trimmed = self.trim_silence(audio, sr)
+            cleaned = self.remove_dc_offset(trimmed)
+            return name, cleaned
         
-        # Skip phase alignment - it can cause phase cancellation artifacts with separated stems
-        # Phase alignment is more appropriate for mixing multiple recordings, not separated stems
-        # logger.info("Phase aligning stems...")
-        # cleaned_stems = self.phase_align(cleaned_stems, sr)
+        logger.info("Trimming silence and removing DC offset...")
+        if num_stems > 1 and max_workers > 1:
+            # Process stems in parallel
+            logger.info(f"Processing {num_stems} stems in parallel (max_workers={max_workers})...")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                cleaned_stems_list = list(executor.map(process_stem_cleanup, loaded_stems.items()))
+            cleaned_stems = dict(cleaned_stems_list)
+            logger.info("Parallel stem processing complete")
+        else:
+            # Sequential processing for single stem or single CPU
+            logger.debug(f"Sequential processing: {num_stems} stem(s), max_workers={max_workers}")
+            cleaned_stems = {name: self.remove_dc_offset(self.trim_silence(audio, sr)) 
+                           for name, audio in loaded_stems.items()}
         
+        # Loudness balance needs all stems together (not parallelizable)
         logger.info("Balancing loudness...")
         cleaned_stems = self.loudness_balance(cleaned_stems, sr)
         

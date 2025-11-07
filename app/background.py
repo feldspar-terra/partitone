@@ -31,13 +31,16 @@ class Job:
     """Represents a processing job."""
     
     def __init__(self, job_id: str, filename: str, selected_stems: List[str], 
-                 format: str = "wav", raw: bool = False, repair_glitch: bool = False):
+                 format: str = "wav", raw: bool = False, repair_glitch: bool = False,
+                 repair_mode: str = "standard", model: str = "htdemucs"):
         self.job_id = job_id
         self.filename = filename
         self.selected_stems = selected_stems
         self.format = format
         self.raw = raw
         self.repair_glitch = repair_glitch
+        self.repair_mode = repair_mode
+        self.model = model
         self.status = JobStatus.QUEUED
         self.message = "Job queued"
         self.progress = 0
@@ -58,10 +61,12 @@ class JobManager:
     
     def create_job(self, filename: str, selected_stems: List[str], 
                    format: str = "wav", raw: bool = False, 
-                   repair_glitch: bool = False) -> str:
+                   repair_glitch: bool = False, repair_mode: str = "standard",
+                   model: str = "htdemucs") -> str:
         """Create a new job and return job ID."""
         job_id = str(uuid.uuid4())
-        job = Job(job_id, filename, selected_stems, format, raw, repair_glitch)
+        job = Job(job_id, filename, selected_stems, format, raw, repair_glitch, 
+                 repair_mode=repair_mode, model=model)
         
         with self.lock:
             self.jobs[job_id] = job
@@ -138,8 +143,9 @@ class JobManager:
             
             self.update_job(job_id, message="Initializing model...", progress=10)
             
-            # Initialize runner
-            runner = DemucsRunner(model=model, device=device)
+            # Initialize runner with job's model
+            runner_model = job.model if hasattr(job, 'model') else model
+            runner = DemucsRunner(model=runner_model, device=device)
             
             output_dir = temp_dir / "output"
             output_dir.mkdir()
@@ -147,12 +153,15 @@ class JobManager:
             self.update_job(job_id, message="Separating audio stems...", progress=20)
             
             # Separate audio
+            # Determine repair mode based on job settings
+            repair_mode = getattr(job, 'repair_mode', 'standard')
             result = runner.separate(
                 str(input_path),
                 str(output_dir),
                 job.format,
                 raw=job.raw,
-                repair_glitch=job.repair_glitch
+                repair_glitch=job.repair_glitch,
+                repair_mode=repair_mode
             )
             
             self.update_job(job_id, message="Creating ZIP archive...", progress=80)
@@ -168,9 +177,28 @@ class JobManager:
                             zipf.write(stem_path, arcname=arcname)
                             logger.info(f"Added {stem_name} to ZIP: {arcname}")
             
+            # Add performance metrics to completion message
+            completion_message = "Processing complete!"
+            if 'performance_metrics' in result:
+                metrics = result['performance_metrics']
+                total_time = metrics.get('total_time', 0)
+                separation_time = metrics.get('separation_time', 0)
+                cleanup_time = metrics.get('cleanup_time', 0)
+                repair_time = metrics.get('repair_time', 0)
+                
+                completion_message = (
+                    f"Processing complete! Total time: {total_time:.2f}s "
+                    f"(Separation: {separation_time:.2f}s"
+                )
+                if cleanup_time > 0:
+                    completion_message += f", Cleanup: {cleanup_time:.2f}s"
+                if repair_time > 0:
+                    completion_message += f", Repair: {repair_time:.2f}s"
+                completion_message += ")"
+            
             self.update_job(job_id, 
                            status=JobStatus.COMPLETED,
-                           message="Processing complete!",
+                           message=completion_message,
                            progress=100,
                            zip_path=zip_path)
             

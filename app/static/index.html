@@ -374,6 +374,71 @@
             background: #dc3545;
             color: white;
         }
+
+        .preset-section {
+            margin-bottom: 30px;
+        }
+
+        .preset-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .preset-selector {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+
+        .preset-option {
+            background: #f8f9ff;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .preset-option:hover {
+            background: #e8ebff;
+            border-color: #667eea;
+        }
+
+        .preset-option.selected {
+            background: #e8ebff;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+        }
+
+        .preset-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .preset-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+        }
+
+        .preset-description {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .preset-time {
+            color: #667eea;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -425,6 +490,13 @@
             </div>
         </div>
 
+        <div class="preset-section">
+            <div class="preset-title">Performance Preset:</div>
+            <div class="preset-selector" id="presetSelector">
+                <!-- Presets will be loaded dynamically -->
+            </div>
+        </div>
+
         <button class="process-btn" id="processBtn" disabled>Process Audio</button>
 
         <div class="progress-section" id="progressSection">
@@ -464,6 +536,59 @@
         let currentJobId = null;
         let eventSource = null;
         let logMessages = [];
+        let selectedPreset = 'balanced';
+        let presetsData = {};
+
+        // Load presets on page load
+        async function loadPresets() {
+            try {
+                const response = await fetch('/presets');
+                const data = await response.json();
+                presetsData = data.presets;
+                selectedPreset = data.default || 'balanced';
+                renderPresets();
+            } catch (error) {
+                console.error('Failed to load presets:', error);
+                // Fallback to default preset
+                selectedPreset = 'balanced';
+            }
+        }
+
+        function renderPresets() {
+            const presetSelector = document.getElementById('presetSelector');
+            presetSelector.innerHTML = '';
+            
+            const presetOrder = ['fast', 'balanced', 'quality', 'ultra'];
+            
+            presetOrder.forEach(presetName => {
+                if (!presetsData[presetName]) return;
+                
+                const preset = presetsData[presetName];
+                const presetDiv = document.createElement('div');
+                presetDiv.className = `preset-option ${presetName === selectedPreset ? 'selected' : ''}`;
+                
+                presetDiv.innerHTML = `
+                    <input type="radio" name="preset" id="preset_${presetName}" value="${presetName}" ${presetName === selectedPreset ? 'checked' : ''}>
+                    <label for="preset_${presetName}" style="cursor: pointer; display: block;">
+                        <div class="preset-name">${presetName.charAt(0).toUpperCase() + presetName.slice(1)}</div>
+                        <div class="preset-description">${preset.description}</div>
+                        <div class="preset-time">⏱️ ${preset.estimated_time_3min_song}</div>
+                    </label>
+                `;
+                
+                presetDiv.addEventListener('click', () => {
+                    selectedPreset = presetName;
+                    document.querySelectorAll('.preset-option').forEach(opt => opt.classList.remove('selected'));
+                    presetDiv.classList.add('selected');
+                    document.getElementById(`preset_${presetName}`).checked = true;
+                });
+                
+                presetSelector.appendChild(presetDiv);
+            });
+        }
+
+        // Load presets when page loads
+        loadPresets();
 
         // Drag and drop handlers
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -558,6 +683,7 @@
             const formData = new FormData();
             formData.append('file', selectedFile);
             formData.append('stems', JSON.stringify(selectedStems));
+            formData.append('preset', selectedPreset);
 
             try {
                 const response = await fetch('/separate', {

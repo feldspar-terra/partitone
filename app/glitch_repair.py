@@ -6,6 +6,8 @@ import librosa
 from pathlib import Path
 from typing import Dict, Union, Optional
 from scipy import signal, interpolate
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 
 from app.audio_utils import (
     normalize_audio_shape,
@@ -13,7 +15,12 @@ from app.audio_utils import (
     load_audio_stems,
     save_audio,
 )
-from app.config import DEFAULT_CLICK_THRESHOLD, DEFAULT_STUTTER_THRESHOLD, DEFAULT_SAMPLE_RATE
+from app.config import (
+    DEFAULT_CLICK_THRESHOLD, DEFAULT_STUTTER_THRESHOLD, DEFAULT_SAMPLE_RATE,
+    GLITCH_REPAIR_FAST_CLICK_THRESHOLD, GLITCH_REPAIR_FAST_STUTTER_THRESHOLD,
+    GLITCH_REPAIR_STANDARD_CLICK_THRESHOLD, GLITCH_REPAIR_STANDARD_STUTTER_THRESHOLD,
+    GLITCH_REPAIR_THOROUGH_CLICK_THRESHOLD, GLITCH_REPAIR_THOROUGH_STUTTER_THRESHOLD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +28,44 @@ logger = logging.getLogger(__name__)
 class GlitchRepair:
     """Glitch repair to reduce minor digital artifacts."""
     
-    def __init__(self, click_threshold: float = DEFAULT_CLICK_THRESHOLD, 
-                 stutter_threshold: float = DEFAULT_STUTTER_THRESHOLD, 
+    def __init__(self, click_threshold: Optional[float] = None, 
+                 stutter_threshold: Optional[float] = None, 
+                 repair_mode: str = "standard",
                  sr: int = DEFAULT_SAMPLE_RATE):
         """Initialize glitch repair processor.
         
         Args:
-            click_threshold: Threshold for click detection (default: 0.1)
-            stutter_threshold: Threshold for stutter detection (default: 0.15)
+            click_threshold: Threshold for click detection (overrides repair_mode if provided)
+            stutter_threshold: Threshold for stutter detection (overrides repair_mode if provided)
+            repair_mode: Repair mode ("fast", "standard", "thorough", or "none")
             sr: Sample rate for filter caching (default: 44100)
         """
+        # Set thresholds based on repair mode if not explicitly provided
+        if click_threshold is None:
+            if repair_mode == "fast":
+                click_threshold = GLITCH_REPAIR_FAST_CLICK_THRESHOLD
+            elif repair_mode == "thorough":
+                click_threshold = GLITCH_REPAIR_THOROUGH_CLICK_THRESHOLD
+            else:  # standard or default
+                click_threshold = GLITCH_REPAIR_STANDARD_CLICK_THRESHOLD
+        
+        if stutter_threshold is None:
+            if repair_mode == "fast":
+                stutter_threshold = GLITCH_REPAIR_FAST_STUTTER_THRESHOLD
+            elif repair_mode == "thorough":
+                stutter_threshold = GLITCH_REPAIR_THOROUGH_STUTTER_THRESHOLD
+            else:  # standard or default
+                stutter_threshold = GLITCH_REPAIR_STANDARD_STUTTER_THRESHOLD
+        
         self.click_threshold = click_threshold
         self.stutter_threshold = stutter_threshold
+        self.repair_mode = repair_mode
         self.sr = sr
         self._click_filter_sos: Optional[np.ndarray] = None
         self._cached_sr: Optional[int] = None
+        
+        logger.debug(f"GlitchRepair initialized with mode={repair_mode}, "
+                    f"click_threshold={click_threshold}, stutter_threshold={stutter_threshold}")
     
     def _get_click_filter(self, sr: int) -> np.ndarray:
         """Get or create cached high-pass filter for click detection.
@@ -274,26 +304,52 @@ class GlitchRepair:
                 logger.warning("Sample rate not provided for audio arrays, using 44100")
                 sr = 44100
         
-        # Repair each stem
-        repaired_stems = {}
-        for name, audio in loaded_stems.items():
-            logger.info(f"Repairing glitches in {name}...")
+        # Skip repair if mode is "none"
+        if self.repair_mode == "none":
+            logger.info("Glitch repair mode is 'none', skipping repair")
+            return stems_dict
+        
+        # Repair each stem (can be parallelized since stems are independent)
+        num_stems = len(loaded_stems)
+        max_workers = min(num_stems, multiprocessing.cpu_count())
+        
+        def repair_single_stem(name_audio_pair):
+            """Repair a single stem (helper for parallel processing)."""
+            name, audio = name_audio_pair
+            logger.info(f"Repairing glitches in {name} (mode: {self.repair_mode})...")
             
             # Detect clicks
             click_mask = self.detect_clicks(audio, sr)
             click_count = np.sum(click_mask)
             if click_count > 0:
-                logger.info(f"  Detected {click_count} potential clicks")
+                logger.info(f"  Detected {click_count} potential clicks in {name}")
                 audio = self.repair_clicks(audio, sr, click_mask)
+            else:
+                logger.debug(f"  No clicks detected in {name}")
             
             # Detect stutters
             stutter_mask = self.detect_stutters(audio, sr)
             stutter_count = np.sum(stutter_mask)
             if stutter_count > 0:
-                logger.info(f"  Detected {stutter_count} potential stutters")
+                logger.info(f"  Detected {stutter_count} potential stutters in {name}")
                 audio = self.repair_stutters(audio, sr, stutter_mask)
+            else:
+                logger.debug(f"  No stutters detected in {name}")
             
-            repaired_stems[name] = audio
+            return name, audio
+        
+        if num_stems > 1 and max_workers > 1:
+            # Process stems in parallel
+            logger.info(f"Processing {num_stems} stems in parallel (max_workers={max_workers})...")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                repaired_stems_list = list(executor.map(repair_single_stem, loaded_stems.items()))
+            repaired_stems = dict(repaired_stems_list)
+        else:
+            # Sequential processing for single stem or single CPU
+            repaired_stems = {}
+            for name, audio in loaded_stems.items():
+                repaired_name, repaired_audio = repair_single_stem((name, audio))
+                repaired_stems[repaired_name] = repaired_audio
         
         if is_file_paths:
             # Save repaired stems to files
