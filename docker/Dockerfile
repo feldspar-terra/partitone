@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 
+# Copy tests directory
+COPY tests/ ./tests/
+
 # Ensure static directory exists (even if empty)
 RUN mkdir -p app/static
 

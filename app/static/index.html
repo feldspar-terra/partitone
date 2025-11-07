@@ -251,6 +251,129 @@
         .error-message.show {
             display: block;
         }
+
+        .log-accordion {
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+
+        .log-accordion-header {
+            background: #f8f9ff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+            user-select: none;
+        }
+
+        .log-accordion-header:hover {
+            background: #e8ebff;
+            border-color: #667eea;
+        }
+
+        .log-accordion-header.active {
+            background: #e8ebff;
+            border-color: #667eea;
+        }
+
+        .log-accordion-title {
+            font-weight: 600;
+            color: #333;
+            font-size: 1em;
+        }
+
+        .log-accordion-icon {
+            transition: transform 0.3s ease;
+            color: #667eea;
+            font-size: 1.2em;
+        }
+
+        .log-accordion-header.active .log-accordion-icon {
+            transform: rotate(180deg);
+        }
+
+        .log-accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            background: #fafafa;
+            border-left: 1px solid #e0e0e0;
+            border-right: 1px solid #e0e0e0;
+            border-bottom: 1px solid #e0e0e0;
+            border-radius: 0 0 10px 10px;
+        }
+
+        .log-accordion-content.show {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .log-messages {
+            padding: 15px;
+        }
+
+        .log-entry {
+            padding: 10px;
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .log-entry.error {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .log-entry.completed {
+            border-left-color: #28a745;
+            background: #f0fff4;
+        }
+
+        .log-timestamp {
+            color: #999;
+            font-size: 0.85em;
+            margin-bottom: 4px;
+        }
+
+        .log-message {
+            color: #333;
+        }
+
+        .log-status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .log-status.queued {
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        .log-status.processing {
+            background: #667eea;
+            color: white;
+        }
+
+        .log-status.completed {
+            background: #28a745;
+            color: white;
+        }
+
+        .log-status.failed {
+            background: #dc3545;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -309,6 +432,16 @@
                 <div class="progress-bar" id="progressBar">0%</div>
             </div>
             <div class="progress-message" id="progressMessage">Initializing...</div>
+            
+            <div class="log-accordion" id="logAccordion" style="display: none;">
+                <div class="log-accordion-header" id="logAccordionHeader">
+                    <div class="log-accordion-title">📋 Processing Log</div>
+                    <div class="log-accordion-icon">▼</div>
+                </div>
+                <div class="log-accordion-content" id="logAccordionContent">
+                    <div class="log-messages" id="logMessages"></div>
+                </div>
+            </div>
         </div>
 
         <button class="download-btn" id="downloadBtn">Download Stems</button>
@@ -330,6 +463,7 @@
         let selectedFile = null;
         let currentJobId = null;
         let eventSource = null;
+        let logMessages = [];
 
         // Drag and drop handlers
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -413,6 +547,12 @@
             progressBar.textContent = '0%';
             progressMessage.textContent = 'Uploading file...';
             hideError();
+            
+            // Reset and show log accordion
+            logMessages = [];
+            const logAccordion = document.getElementById('logAccordion');
+            logAccordion.style.display = 'block';
+            updateLogDisplay();
 
             // Upload file and start processing
             const formData = new FormData();
@@ -467,6 +607,12 @@
             progressBar.textContent = data.progress + '%';
             progressMessage.textContent = data.message || 'Processing...';
 
+            // Update log messages if provided
+            if (data.log_messages && Array.isArray(data.log_messages)) {
+                logMessages = data.log_messages;
+                updateLogDisplay();
+            }
+
             if (data.status === 'completed') {
                 eventSource.close();
                 progressMessage.textContent = 'Processing complete!';
@@ -485,6 +631,60 @@
             }
         }
 
+        function updateLogDisplay() {
+            const logMessagesContainer = document.getElementById('logMessages');
+            logMessagesContainer.innerHTML = '';
+            
+            if (logMessages.length === 0) {
+                logMessagesContainer.innerHTML = '<div class="log-entry">No log entries yet...</div>';
+                return;
+            }
+            
+            logMessages.forEach(logEntry => {
+                const entryDiv = document.createElement('div');
+                const statusClass = logEntry.status || 'queued';
+                // Add error class if status is failed or message starts with "Error:"
+                const isError = statusClass === 'failed' || logEntry.message.startsWith('Error:');
+                entryDiv.className = `log-entry ${statusClass}${isError ? ' error' : ''}`;
+                
+                const timestamp = new Date(logEntry.timestamp).toLocaleTimeString();
+                
+                entryDiv.innerHTML = `
+                    <div class="log-timestamp">${timestamp}</div>
+                    <div class="log-message">
+                        ${escapeHtml(logEntry.message)}
+                        <span class="log-status ${statusClass}">${statusClass}</span>
+                    </div>
+                `;
+                
+                logMessagesContainer.appendChild(entryDiv);
+            });
+            
+            // Auto-scroll to bottom
+            logMessagesContainer.scrollTop = logMessagesContainer.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Accordion toggle functionality
+        const logAccordionHeader = document.getElementById('logAccordionHeader');
+        const logAccordionContent = document.getElementById('logAccordionContent');
+        
+        logAccordionHeader.addEventListener('click', () => {
+            const isActive = logAccordionHeader.classList.contains('active');
+            if (isActive) {
+                logAccordionHeader.classList.remove('active');
+                logAccordionContent.classList.remove('show');
+            } else {
+                logAccordionHeader.classList.add('active');
+                logAccordionContent.classList.add('show');
+            }
+        });
+
         function showError(message) {
             errorMessage.textContent = message;
             errorMessage.classList.add('show');
@@ -497,6 +697,11 @@
         function resetUI() {
             progressSection.classList.remove('show');
             downloadBtn.classList.remove('show');
+            logMessages = [];
+            const logAccordion = document.getElementById('logAccordion');
+            logAccordion.style.display = 'none';
+            logAccordionHeader.classList.remove('active');
+            logAccordionContent.classList.remove('show');
             if (eventSource) {
                 eventSource.close();
                 eventSource = null;

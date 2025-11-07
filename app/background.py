@@ -45,6 +45,7 @@ class Job:
         self.error: Optional[str] = None
         self.created_at = datetime.now()
         self.temp_dir: Optional[Path] = None
+        self.log_messages: List[dict] = []  # List of log entries with timestamp and message
 
 
 class JobManager:
@@ -66,6 +67,13 @@ class JobManager:
             self.jobs[job_id] = job
         
         logger.info(f"Created job {job_id} for {filename}")
+        # Add initial log message
+        job.log_messages.append({
+            'timestamp': datetime.now().isoformat(),
+            'message': f"Job created for {filename}",
+            'status': JobStatus.QUEUED,
+            'progress': 0
+        })
         return job_id
     
     def get_job(self, job_id: str) -> Optional[Job]:
@@ -86,10 +94,24 @@ class JobManager:
                 job.status = status
             if message:
                 job.message = message
+                # Add message to log with timestamp
+                job.log_messages.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'message': message,
+                    'status': status or job.status,
+                    'progress': progress if progress is not None else job.progress
+                })
             if progress is not None:
                 job.progress = progress
             if error:
                 job.error = error
+                # Add error to log
+                job.log_messages.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'message': f"Error: {error}",
+                    'status': status or job.status,
+                    'progress': progress if progress is not None else job.progress
+                })
             if zip_path:
                 job.zip_path = zip_path
     

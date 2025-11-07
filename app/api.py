@@ -179,6 +179,7 @@ async def get_progress(job_id: str):
                     'status': job.status,
                     'message': job.message,
                     'progress': job.progress,
+                    'log_messages': job.log_messages,  # Include full log history
                 }
                 if job.error:
                     data['error'] = job.error

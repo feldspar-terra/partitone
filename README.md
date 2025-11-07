@@ -6,6 +6,8 @@ A Dockerized audio stem separation tool that extracts individual stems (vocals, 
 
 - **CLI Tool**: Process audio files from the command line
 - **REST API**: Separate stems via HTTP API with file upload
+- **Web UI**: Modern, user-friendly web interface with real-time progress tracking
+- **Processing Log Accordion**: Expandable log viewer showing detailed processing updates with timestamps
 - **GPU Acceleration**: Automatic CUDA detection and GPU acceleration when available
 - **Batch Processing**: Process entire folders of audio files
 - **Multiple Formats**: Supports MP3, WAV, FLAC, and M4A input/output
@@ -77,7 +79,16 @@ docker run --rm \
   partitone api
 ```
 
-Separate stems via API:
+Access the web UI at `http://localhost:8000` in your browser.
+
+The web UI provides:
+- Drag-and-drop file upload
+- Stem selection (vocals, drums, bass, guitar, piano, other)
+- Real-time progress bar
+- **Processing Log Accordion**: Expandable log viewer showing detailed processing updates with timestamps and status indicators
+- Direct download of processed stems as ZIP
+
+Separate stems via API (programmatic access):
 
 ```bash
 curl -F "file=@song.mp3" \
@@ -111,17 +122,72 @@ Processed files create output directories with individual stem files:
 
 ## API Endpoints
 
+### GET /
+
+Serves the web UI interface for browser-based stem separation.
+
 ### POST /separate
 
-Upload an audio file and receive a ZIP archive containing separated stems.
+Upload an audio file and receive a job ID for tracking progress (web UI) or a ZIP archive (legacy API).
 
 **Request:**
 - Content-Type: `multipart/form-data`
 - Field name: `file`
 - Accepted formats: MP3, WAV, FLAC, M4A
-- Query parameters:
+- Form fields:
+  - `stems` (JSON array, optional): Selected stems to extract (e.g., `["vocals", "drums"]`)
   - `raw` (bool, default: false): Skip cleanup
   - `repair_glitch` (bool, default: false): Enable glitch repair
+  - `format` (string, default: "wav"): Output format (wav or flac)
+  - `model` (string, default: "htdemucs"): Model to use
+  - `device` (string, optional): Device to use (cpu, cuda, or auto)
+
+**Response (Web UI mode):**
+- Content-Type: `application/json`
+- JSON with `job_id` for tracking progress:
+```json
+{
+  "job_id": "uuid-here",
+  "status": "queued"
+}
+```
+
+**Response (Legacy API mode):**
+- Content-Type: `application/zip`
+- ZIP file containing separated stems
+
+### GET /progress/{job_id}
+
+Server-Sent Events (SSE) endpoint for real-time job progress updates.
+
+**Response:**
+- Content-Type: `text/event-stream`
+- SSE stream with progress updates:
+```json
+{
+  "status": "processing",
+  "message": "Separating audio stems...",
+  "progress": 45,
+  "log_messages": [
+    {
+      "timestamp": "2024-01-01T12:00:00",
+      "message": "Job created for song.mp3",
+      "status": "queued",
+      "progress": 0
+    },
+    {
+      "timestamp": "2024-01-01T12:00:05",
+      "message": "Saving uploaded file...",
+      "status": "processing",
+      "progress": 5
+    }
+  ]
+}
+```
+
+### GET /download/{job_id}
+
+Download processed stems ZIP file for a completed job.
 
 **Response:**
 - Content-Type: `application/zip`
@@ -135,7 +201,12 @@ Health check endpoint.
 ```json
 {
   "status": "healthy",
-  "gpu_available": true
+  "gpu_available": true,
+  "device_info": {
+    "cuda_available": true,
+    "device_count": 1,
+    "device_name": "NVIDIA GeForce RTX 3080"
+  }
 }
 ```
 
