@@ -17,7 +17,16 @@ from pydantic import BaseModel
 from app.runner import DemucsRunner, get_device_info
 from app.utils import is_audio_file, ensure_directory
 from app.background import job_manager, JobStatus
-from app.config import get_preset, DEFAULT_PRESET, PERFORMANCE_PRESETS
+from app.config import DEFAULT_PRESET, PERFORMANCE_PRESETS, MAX_FILE_SIZE_MB, SSE_POLL_INTERVAL, get_preset
+from app.preset_utils import apply_preset
+from app.exceptions import (
+    PartiToneError,
+    InvalidAudioFormatError,
+    FileSizeLimitError,
+    FileReadError,
+    ModelInitializationError,
+    JobNotFoundError,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -106,19 +115,36 @@ async def separate_audio(
 ):
     """Separate audio file into stems (web UI version with background processing).
     
+    This is the recommended endpoint for new integrations. It provides:
+    - Background job processing (non-blocking)
+    - Real-time progress updates via SSE
+    - Detailed processing logs
+    - Performance metrics
+    
     Args:
         file: Audio file to separate (MP3, WAV, FLAC, or M4A)
         stems: JSON array of selected stems (e.g., ["vocals", "drums"])
         model: Model to use (default: from preset or htdemucs)
         format: Output format - wav or flac (default: wav)
-        device: Device to use - cpu, cuda, or auto (default: auto)
+        device: Device to use - cpu, cuda, or auto (default: auto, selects best GPU on multi-GPU systems)
         raw: Skip light cleanup (default: from preset or False)
         repair_glitch: Enable glitch repair (default: from preset or False)
         preset: Performance preset - fast, balanced, quality, ultra (overrides individual settings)
         repair_mode: Glitch repair mode - fast, standard, thorough (default: standard)
     
     Returns:
-        JSON with job_id for tracking progress
+        JSON response with job_id for tracking progress:
+        ```json
+        {
+            "job_id": "uuid-here",
+            "status": "queued"
+        }
+        ```
+    
+    Raises:
+        HTTPException: 400 if file format is invalid or preset is invalid
+        HTTPException: 413 if file size exceeds maximum allowed size
+        HTTPException: 500 if file reading fails
     """
     # Validate file type
     filename = file.filename
@@ -127,6 +153,23 @@ async def separate_audio(
             status_code=400,
             detail="Unsupported file format. Please upload MP3, WAV, FLAC, M4A, or AAC file."
         )
+    
+    # Read file content and validate size
+    try:
+        file_content = await file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        logger.info(f"Received file: {filename} ({len(file_content)} bytes, {file_size_mb:.2f} MB)")
+        
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size ({MAX_FILE_SIZE_MB} MB)"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to read uploaded file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process uploaded file")
     
     # Parse selected stems
     selected_stems = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other']
@@ -156,18 +199,16 @@ async def separate_audio(
     device = None if device == 'auto' or device is None else device
     
     # Apply preset if provided (preset overrides individual settings)
-    if preset:
-        try:
+    try:
+        model, raw, repair_glitch, repair_mode = apply_preset(preset)
+        if preset:
             preset_config = get_preset(preset)
-            model = preset_config.model
-            raw = preset_config.raw
-            repair_glitch = preset_config.repair_glitch
-            repair_mode = preset_config.repair_mode
             logger.info(f"Using preset '{preset}': {preset_config.description}")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    else:
-        # Use defaults if not set
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Override with explicit parameters if provided (when no preset)
+    if not preset:
         if model is None:
             model = "htdemucs"
         if raw is None:
@@ -176,14 +217,6 @@ async def separate_audio(
             repair_glitch = False
         if repair_mode is None:
             repair_mode = "standard"
-    
-    # Read file content
-    try:
-        file_content = await file.read()
-        logger.info(f"Received file: {filename} ({len(file_content)} bytes)")
-    except Exception as e:
-        logger.error(f"Failed to read uploaded file: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process uploaded file")
     
     # Create job
     job_id = job_manager.create_job(
@@ -242,7 +275,7 @@ async def get_progress(job_id: str):
             
             # Small delay to avoid overwhelming the client
             import asyncio
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(SSE_POLL_INTERVAL)
     
     return StreamingResponse(
         event_generator(),
@@ -288,8 +321,38 @@ async def separate_audio_legacy(
 ):
     """Legacy separate endpoint (synchronous, returns ZIP directly).
     
-    This endpoint is kept for backward compatibility with API clients.
-    For web UI, use /separate instead.
+    **DEPRECATED**: This endpoint is kept for backward compatibility with older API clients.
+    For new integrations, use `/separate` which provides background processing and progress tracking.
+    
+    **Differences from `/separate`:**
+    - Synchronous processing (blocks until complete)
+    - Returns ZIP file directly in response (no job tracking)
+    - No progress updates or log messages
+    - Simpler for simple scripts but less efficient for large files
+    
+    **Request:**
+    - Content-Type: `multipart/form-data`
+    - Field name: `file`
+    - Accepted formats: MP3, WAV, FLAC, M4A
+    - Form fields:
+      - `model` (string, optional): Model to use (default: "htdemucs")
+      - `format` (string, optional): Output format - wav or flac (default: "wav")
+      - `device` (string, optional): Device to use - cpu, cuda, or auto (default: auto)
+      - `raw` (bool, optional): Skip cleanup (default: False)
+      - `repair_glitch` (bool, optional): Enable glitch repair (default: False)
+    
+    **Response:**
+    - Content-Type: `application/zip`
+    - ZIP file containing all separated stems
+    
+    **Example:**
+    ```bash
+    curl -F "file=@song.mp3" \
+      -F "model=htdemucs" \
+      -F "format=wav" \
+      http://localhost:8000/separate-legacy \
+      --output stems.zip
+    ```
     """
     # Validate file type
     filename = file.filename
@@ -313,13 +376,27 @@ async def separate_audio_legacy(
         output_dir = Path(temp_dir) / "output"
         output_dir.mkdir()
         
+        # Validate file size
+        try:
+            content = await file.read()
+            file_size_mb = len(content) / (1024 * 1024)
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File size ({file_size_mb:.2f} MB) exceeds maximum allowed size ({MAX_FILE_SIZE_MB} MB)"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to read uploaded file: {e}")
+            raise HTTPException(status_code=500, detail="Failed to process uploaded file")
+        
         # Save uploaded file
         try:
             with open(input_path, 'wb') as f:
-                content = await file.read()
                 f.write(content)
             logger.info(f"Saved uploaded file: {filename} ({len(content)} bytes)")
-        except Exception as e:
+        except (IOError, OSError) as e:
             logger.error(f"Failed to save uploaded file: {e}")
             raise HTTPException(status_code=500, detail="Failed to process uploaded file")
         
@@ -340,7 +417,7 @@ async def separate_audio_legacy(
                 repair_glitch=repair_glitch
             )
             logger.info(f"Separation complete: {result['output_dir']}")
-        except Exception as e:
+        except (RuntimeError, FileNotFoundError, ValueError) as e:
             logger.error(f"Separation failed: {e}")
             raise HTTPException(status_code=500, detail=f"Separation failed: {str(e)}")
         
@@ -355,7 +432,7 @@ async def separate_audio_legacy(
                         logger.info(f"Added {stem_name} to ZIP: {arcname}")
             
             logger.info(f"Created ZIP archive: {zip_path}")
-        except Exception as e:
+        except (zipfile.BadZipFile, IOError, OSError) as e:
             logger.error(f"Failed to create ZIP archive: {e}")
             raise HTTPException(status_code=500, detail="Failed to create output archive")
         

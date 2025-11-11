@@ -362,7 +362,7 @@ class GlitchRepair:
                     save_audio(audio, output_path, sr, format)
                     processed_paths[name] = str(output_path)
                     logger.info(f"Saved repaired {name} -> {output_path}")
-                except Exception as e:
+                except (IOError, OSError, ValueError) as e:
                     logger.error(f"Failed to save repaired {name}: {e}")
                     processed_paths[name] = stems_dict[name]  # Fallback to original
             

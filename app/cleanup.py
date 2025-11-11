@@ -208,7 +208,7 @@ class LightCleanup:
                     balanced_stems[name] = balanced
                 else:
                     balanced_stems[name] = audio
-            except Exception as e:
+            except (ValueError, RuntimeError) as e:
                 logger.warning(f"Failed to balance loudness for {name}: {e}")
                 balanced_stems[name] = audio
         
@@ -288,7 +288,7 @@ class LightCleanup:
                     save_audio(audio, output_path, sr, format)
                     processed_paths[name] = str(output_path)
                     logger.info(f"Saved cleaned {name} -> {output_path}")
-                except Exception as e:
+                except (IOError, OSError, ValueError) as e:
                     logger.error(f"Failed to save cleaned {name}: {e}")
                     processed_paths[name] = stems_dict[name]  # Fallback to original
             

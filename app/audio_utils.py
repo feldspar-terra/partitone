@@ -102,7 +102,7 @@ def load_audio_stems(stems_dict: Dict[str, Union[str, Path]], sr: int = None) ->
                 detected_sr = sample_rate
             elif detected_sr != sample_rate:
                 logger.warning(f"Sample rate mismatch: {name} has {sample_rate}, expected {detected_sr}")
-        except Exception as e:
+        except (IOError, OSError, ValueError, RuntimeError) as e:
             logger.error(f"Failed to load {name}: {e}")
             continue
     

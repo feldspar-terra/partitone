@@ -23,6 +23,13 @@ from app.cleanup import LightCleanup
 from app.glitch_repair import GlitchRepair
 from app.audio_utils import load_audio_stems, save_audio
 from app.config import MAX_PARALLEL_WORKERS
+from app.exceptions import (
+    PartiToneError,
+    DemucsExecutionError,
+    AudioProcessingError,
+    StemNotFoundError,
+    InvalidAudioFormatError,
+)
 import numpy as np
 
 
@@ -48,9 +55,12 @@ class DemucsRunner:
                 self.device = "cuda"
                 device_count = torch.cuda.device_count()
                 if device_count > 1:
-                    # Use the first GPU (can be enhanced to select fastest GPU)
-                    logger.info(f"GPU (CUDA) detected: {device_count} devices available, using device 0")
-                    logger.info(f"GPU device name: {torch.cuda.get_device_name(0)}")
+                    # Select the GPU with the most available memory (best performance indicator)
+                    selected_device = self._select_best_gpu()
+                    torch.cuda.set_device(selected_device)
+                    logger.info(f"GPU (CUDA) detected: {device_count} devices available")
+                    logger.info(f"Selected GPU {selected_device}: {torch.cuda.get_device_name(selected_device)}")
+                    logger.info(f"GPU memory: {torch.cuda.get_device_properties(selected_device).total_memory / (1024**3):.2f} GB")
                 else:
                     logger.info(f"GPU (CUDA) detected and enabled: {torch.cuda.get_device_name(0)}")
             else:
@@ -60,6 +70,52 @@ class DemucsRunner:
             self.device = device
         
         logger.info(f"Demucs runner initialized with model: {model}, device: {self.device}")
+    
+    def _select_best_gpu(self) -> int:
+        """Select the best GPU from available devices.
+        
+        Selection criteria (in order):
+        1. GPU with most total memory
+        2. GPU with most free memory
+        3. First available GPU (fallback)
+        
+        Returns:
+            Device index of the selected GPU
+        """
+        device_count = torch.cuda.device_count()
+        if device_count == 0:
+            raise RuntimeError("No CUDA devices available")
+        
+        if device_count == 1:
+            return 0
+        
+        best_device = 0
+        best_memory = 0
+        
+        for device_id in range(device_count):
+            try:
+                props = torch.cuda.get_device_properties(device_id)
+                # Use total memory as primary criterion
+                total_memory = props.total_memory
+                
+                # If we can get free memory, prefer GPU with more free memory
+                try:
+                    torch.cuda.set_device(device_id)
+                    free_memory = torch.cuda.get_device_properties(device_id).total_memory - torch.cuda.memory_allocated(device_id)
+                    # Weight: 70% total memory, 30% free memory
+                    score = total_memory * 0.7 + free_memory * 0.3
+                except RuntimeError:
+                    # Fallback to total memory only
+                    score = total_memory
+                
+                if score > best_memory:
+                    best_memory = score
+                    best_device = device_id
+            except RuntimeError as e:
+                logger.warning(f"Could not evaluate GPU {device_id}: {e}")
+                continue
+        
+        return best_device
     
     def separate(self, input_path: str, output_dir: str, format: str = "wav", 
                  raw: bool = False, repair_glitch: bool = False, 
@@ -86,7 +142,7 @@ class DemucsRunner:
             raise FileNotFoundError(f"Input file not found: {input_path}")
         
         if not is_audio_file(input_path):
-            raise ValueError(f"Unsupported audio format: {input_path}")
+            raise InvalidAudioFormatError(f"Unsupported audio format: {input_path}")
         
         # Create output directory
         track_name = Path(input_path).name
@@ -183,7 +239,7 @@ class DemucsRunner:
             # Clean up temporary directory immediately after copying stems
             try:
                 shutil.rmtree(temp_output)
-            except Exception as e:
+            except (OSError, PermissionError) as e:
                 logger.warning(f"Failed to clean up temp directory: {e}")
             
             # Load stems once for processing (if cleanup or repair needed)
@@ -206,7 +262,7 @@ class DemucsRunner:
                     cleanup_time = time.time() - cleanup_start
                     performance_metrics['cleanup_time'] = cleanup_time
                     logger.info(f"Light cleanup applied in {cleanup_time:.2f} seconds (sample rate: {cleanup_sr} Hz)")
-                except Exception as e:
+                except (AudioProcessingError, ValueError, RuntimeError) as e:
                     logger.warning(f"Cleanup failed, continuing with raw stems: {e}")
                     # Fallback: reload from files
                     if processed_stems:
@@ -221,7 +277,7 @@ class DemucsRunner:
                     repair_time = time.time() - repair_start
                     performance_metrics['repair_time'] = repair_time
                     logger.info(f"Glitch repair ({repair_mode}) applied in {repair_time:.2f} seconds")
-                except Exception as e:
+                except (AudioProcessingError, ValueError, RuntimeError) as e:
                     logger.warning(f"Glitch repair failed: {e}")
             
             # Save processed stems if they were modified in memory
@@ -236,7 +292,7 @@ class DemucsRunner:
                                 continue
                             save_audio(audio, stem_paths[name], save_sr, format)
                             logger.info(f"Saved processed {name} (sample rate: {save_sr} Hz)")
-                        except Exception as e:
+                        except (IOError, OSError, ValueError) as e:
                             logger.error(f"Failed to save processed {name}: {e}")
                             import traceback
                             logger.debug(traceback.format_exc())
@@ -268,10 +324,13 @@ class DemucsRunner:
             logger.error(f"Demucs process failed: {e}")
             logger.error(f"stdout: {e.stdout}")
             logger.error(f"stderr: {e.stderr}")
-            raise RuntimeError(f"Separation failed: {e.stderr}")
+            raise DemucsExecutionError(f"Separation failed: {e.stderr}") from e
+        except (PartiToneError, FileNotFoundError, ValueError) as e:
+            # Re-raise known exceptions
+            raise
         except Exception as e:
             logger.error(f"Error during separation: {e}")
-            raise
+            raise AudioProcessingError(f"Unexpected error during separation: {e}") from e
     
     def separate_batch(self, input_dir: str, output_dir: str, format: str = "wav",
                        raw: bool = False, repair_glitch: bool = False, 
@@ -353,8 +412,14 @@ class DemucsRunner:
                 try:
                     result = future.result()
                     results_dict[audio_file] = result
-                except Exception as e:
+                except (PartiToneError, FileNotFoundError, ValueError, RuntimeError) as e:
                     logger.error(f"Failed to process {audio_file}: {e}")
+                    results_dict[audio_file] = {
+                        'input_file': audio_file,
+                        'error': str(e),
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to process {audio_file} with unexpected error: {e}")
                     results_dict[audio_file] = {
                         'input_file': audio_file,
                         'error': str(e),
@@ -401,8 +466,14 @@ class DemucsRunner:
         try:
             return self.separate(audio_file, output_dir, format, 
                                raw=raw, repair_glitch=repair_glitch, repair_mode=repair_mode)
-        except Exception as e:
+        except (PartiToneError, FileNotFoundError, ValueError, RuntimeError) as e:
             logger.error(f"Failed to process {audio_file}: {e}")
+            return {
+                'input_file': audio_file,
+                'error': str(e),
+            }
+        except Exception as e:
+            logger.error(f"Failed to process {audio_file} with unexpected error: {e}")
             return {
                 'input_file': audio_file,
                 'error': str(e),
@@ -423,7 +494,7 @@ def get_device_info() -> dict:
             info['gpu_memory_total_mb'] = torch.cuda.get_device_properties(0).total_memory / (1024**2)
             info['gpu_memory_allocated_mb'] = torch.cuda.memory_allocated(0) / (1024**2) if torch.cuda.is_available() else 0
             info['gpu_memory_cached_mb'] = torch.cuda.memory_reserved(0) / (1024**2) if torch.cuda.is_available() else 0
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             logger.debug(f"Could not retrieve detailed GPU info: {e}")
     
     return info

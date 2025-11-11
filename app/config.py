@@ -1,6 +1,7 @@
 """Configuration defaults for PartiTone."""
 
-from typing import Dict, Literal
+import os
+from typing import Dict, Literal, Optional
 from dataclasses import dataclass
 
 # Light Cleanup defaults
@@ -26,13 +27,20 @@ DEFAULT_OUTPUT_FORMAT = "wav"
 # Demucs defaults
 DEFAULT_MODEL = "htdemucs"
 
-# API defaults
-MAX_FILE_SIZE_MB = 500
-API_TIMEOUT_SECONDS = 3600  # 1 hour
+# API defaults - can be overridden via environment variables
+MAX_FILE_SIZE_MB = int(os.getenv("PARTITONE_MAX_FILE_SIZE_MB", "500"))
+API_TIMEOUT_SECONDS = int(os.getenv("PARTITONE_API_TIMEOUT_SECONDS", "3600"))  # 1 hour
+SSE_POLL_INTERVAL = float(os.getenv("PARTITONE_SSE_POLL_INTERVAL", "0.5"))  # SSE polling interval in seconds
 
 # Batch processing defaults
-BATCH_PROGRESS_UPDATE_INTERVAL = 1  # Update progress every N files
-MAX_PARALLEL_WORKERS = None  # None = auto-detect (CPU count), or set to specific number
+BATCH_PROGRESS_UPDATE_INTERVAL = int(os.getenv("PARTITONE_BATCH_PROGRESS_INTERVAL", "1"))  # Update progress every N files
+MAX_PARALLEL_WORKERS: Optional[int] = None  # None = auto-detect (CPU count), or set to specific number
+if os.getenv("PARTITONE_MAX_PARALLEL_WORKERS"):
+    MAX_PARALLEL_WORKERS = int(os.getenv("PARTITONE_MAX_PARALLEL_WORKERS"))
+
+# Job cleanup defaults
+JOB_CLEANUP_INTERVAL_HOURS = int(os.getenv("PARTITONE_JOB_CLEANUP_INTERVAL_HOURS", "1"))  # Clean up jobs older than N hours
+JOB_CLEANUP_ENABLED = os.getenv("PARTITONE_JOB_CLEANUP_ENABLED", "true").lower() == "true"
 
 # Performance presets
 PresetName = Literal["fast", "balanced", "quality", "ultra"]

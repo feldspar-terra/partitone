@@ -30,3 +30,23 @@ class FileSizeLimitError(PartiToneError):
     """Raised when uploaded file exceeds size limit."""
     pass
 
+
+class FileReadError(PartiToneError):
+    """Raised when file reading fails."""
+    pass
+
+
+class FileWriteError(PartiToneError):
+    """Raised when file writing fails."""
+    pass
+
+
+class ModelInitializationError(PartiToneError):
+    """Raised when model initialization fails."""
+    pass
+
+
+class JobNotFoundError(PartiToneError):
+    """Raised when a job is not found."""
+    pass
+

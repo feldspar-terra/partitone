@@ -14,6 +14,15 @@ from queue import Queue
 
 from app.runner import DemucsRunner
 from app.utils import is_audio_file
+from app.exceptions import (
+    PartiToneError,
+    AudioProcessingError,
+    FileReadError,
+    FileWriteError,
+    ModelInitializationError,
+    JobNotFoundError,
+)
+from app.config import JOB_CLEANUP_INTERVAL_HOURS, JOB_CLEANUP_ENABLED
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,7 +66,13 @@ class JobManager:
     def __init__(self):
         self.jobs: Dict[str, Job] = {}
         self.lock = threading.Lock()
-        self.cleanup_interval = timedelta(hours=1)  # Clean up jobs older than 1 hour
+        self.cleanup_interval = timedelta(hours=JOB_CLEANUP_INTERVAL_HOURS)
+        self._cleanup_thread: Optional[threading.Thread] = None
+        self._stop_cleanup = threading.Event()
+        
+        # Start cleanup thread if enabled
+        if JOB_CLEANUP_ENABLED:
+            self._start_cleanup_thread()
     
     def create_job(self, filename: str, selected_stems: List[str], 
                    format: str = "wav", raw: bool = False, 
@@ -82,14 +97,30 @@ class JobManager:
         return job_id
     
     def get_job(self, job_id: str) -> Optional[Job]:
-        """Get job by ID."""
+        """Get job by ID.
+        
+        Args:
+            job_id: Unique job identifier
+            
+        Returns:
+            Job object if found, None otherwise
+        """
         with self.lock:
             return self.jobs.get(job_id)
     
-    def update_job(self, job_id: str, status: str = None, 
-                   message: str = None, progress: int = None, 
-                   error: str = None, zip_path: Path = None):
-        """Update job status."""
+    def update_job(self, job_id: str, status: Optional[str] = None, 
+                   message: Optional[str] = None, progress: Optional[int] = None, 
+                   error: Optional[str] = None, zip_path: Optional[Path] = None) -> None:
+        """Update job status.
+        
+        Args:
+            job_id: Unique job identifier
+            status: New job status (queued, processing, completed, failed)
+            message: Status message to log
+            progress: Progress percentage (0-100)
+            error: Error message if job failed
+            zip_path: Path to completed job's ZIP file
+        """
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
@@ -126,7 +157,7 @@ class JobManager:
         job = self.get_job(job_id)
         if not job:
             logger.error(f"Job {job_id} not found")
-            return
+            raise JobNotFoundError(f"Job {job_id} not found")
         
         try:
             # Create temporary directory for this job
@@ -138,14 +169,20 @@ class JobManager:
             
             # Save uploaded file
             input_path = temp_dir / job.filename
-            with open(input_path, 'wb') as f:
-                f.write(file_content)
+            try:
+                with open(input_path, 'wb') as f:
+                    f.write(file_content)
+            except (IOError, OSError) as e:
+                raise FileWriteError(f"Failed to save uploaded file: {e}") from e
             
             self.update_job(job_id, message="Initializing model...", progress=10)
             
             # Initialize runner with job's model
-            runner_model = job.model if hasattr(job, 'model') else model
-            runner = DemucsRunner(model=runner_model, device=device)
+            runner_model = job.model
+            try:
+                runner = DemucsRunner(model=runner_model, device=device)
+            except Exception as e:
+                raise ModelInitializationError(f"Failed to initialize Demucs runner: {e}") from e
             
             output_dir = temp_dir / "output"
             output_dir.mkdir()
@@ -153,8 +190,8 @@ class JobManager:
             self.update_job(job_id, message="Separating audio stems...", progress=20)
             
             # Separate audio
-            # Determine repair mode based on job settings
-            repair_mode = getattr(job, 'repair_mode', 'standard')
+            # Use job's repair_mode (always set in Job.__init__)
+            repair_mode = job.repair_mode
             result = runner.separate(
                 str(input_path),
                 str(output_dir),
@@ -204,15 +241,29 @@ class JobManager:
             
             logger.info(f"Job {job_id} completed successfully")
             
-        except Exception as e:
+        except (PartiToneError, FileNotFoundError, ValueError, RuntimeError) as e:
             logger.error(f"Job {job_id} failed: {e}", exc_info=True)
             self.update_job(job_id,
                            status=JobStatus.FAILED,
                            message=f"Processing failed: {str(e)}",
                            error=str(e))
+        except Exception as e:
+            # Catch-all for unexpected errors
+            logger.error(f"Job {job_id} failed with unexpected error: {e}", exc_info=True)
+            self.update_job(job_id,
+                           status=JobStatus.FAILED,
+                           message=f"Processing failed: {str(e)}",
+                           error=str(e))
+        finally:
+            # Ensure cleanup is triggered after job completion
+            if JOB_CLEANUP_ENABLED:
+                self.cleanup_old_jobs()
     
     def cleanup_old_jobs(self):
         """Clean up old completed/failed jobs."""
+        if not JOB_CLEANUP_ENABLED:
+            return
+            
         now = datetime.now()
         with self.lock:
             to_remove = []
@@ -228,12 +279,32 @@ class JobManager:
                     try:
                         shutil.rmtree(job.temp_dir)
                         logger.info(f"Cleaned up temp directory for job {job_id}")
-                    except Exception as e:
+                    except (OSError, PermissionError) as e:
                         logger.warning(f"Failed to clean up job {job_id}: {e}")
                 del self.jobs[job_id]
                 logger.info(f"Removed old job {job_id}")
+    
+    def _start_cleanup_thread(self):
+        """Start background thread for periodic job cleanup."""
+        def cleanup_loop():
+            while not self._stop_cleanup.is_set():
+                self._stop_cleanup.wait(timeout=3600)  # Check every hour
+                if not self._stop_cleanup.is_set():
+                    self.cleanup_old_jobs()
+        
+        self._cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
+        self._cleanup_thread.start()
+        logger.info("Started background job cleanup thread")
+    
+    def stop_cleanup_thread(self):
+        """Stop the background cleanup thread."""
+        if self._cleanup_thread:
+            self._stop_cleanup.set()
+            self._cleanup_thread.join(timeout=5)
+            logger.info("Stopped background job cleanup thread")
 
 
 # Global job manager instance
 job_manager = JobManager()
+
 

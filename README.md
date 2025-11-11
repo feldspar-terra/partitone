@@ -351,7 +351,14 @@ GPU acceleration is the most important factor for performance:
 - **With GPU**: 3-minute song can process in 5-90 seconds (depending on preset)
 - **Without GPU**: 3-minute song takes 2-5+ minutes
 
-PartiTone automatically detects and uses GPU when available. Multi-GPU systems will use the first available GPU.
+PartiTone automatically detects and uses GPU when available. 
+
+**Multi-GPU Support:**
+- On systems with multiple GPUs, PartiTone automatically selects the best GPU based on:
+  - Total memory capacity (primary factor)
+  - Available free memory (secondary factor)
+- The selected GPU is logged during initialization
+- Manual GPU selection can be done via the `--device` flag (CLI) or `device` parameter (API)
 
 ### Parallel Processing
 
